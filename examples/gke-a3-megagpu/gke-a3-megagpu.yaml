@@ -179,3 +179,15 @@ deployment_groups:
           accelerator_type: $(vars.accelerator_type)
       jobset:
         install: true
+
+  - id: chs_job_generate
+    source: modules/compute/template-renderer
+    settings:
+      file_path: "./chs-job.yaml"
+      template_vars: 
+        project_id: $(vars.project_id)
+        deployment_name: $(vars.deployment_name)
+        region: $(vars.region)
+        machine_type: a3-megagpu-8g
+      output_file_path: "${path.module}/rendered_manifests/chs-job-rendered.yaml"
+    outputs: [instructions]

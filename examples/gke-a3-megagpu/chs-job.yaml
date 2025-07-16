@@ -1,0 +1,57 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cluster-health-scanner-job
+spec:
+  template:
+    spec:
+      serviceAccountName: workload-identity-k8s-sa
+      containers:
+      - name: chs-runner
+        image: python:3.11-slim-buster
+        imagePullPolicy: Always
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -ex
+          set -x
+          apt-get update && apt-get install -y git curl gnupg -y
+          git clone https://github.com/GoogleCloudPlatform/cluster-health-scanner
+          cd cluster-health-scanner
+          apt-get install -y apt-transport-https ca-certificates
+          curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+          apt-get update
+          apt-get install -y google-cloud-cli kubectl
+          apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          pip3 install -r cli/requirements.txt
+          gcloud container clusters get-credentials ${deployment_name} --region ${region} --project ${project_id} # Use template variables
+          OUTPUT_DIR="/mnt/output"
+          mkdir -p $OUTPUT_DIR
+          TIMESTAMP="`date "+%Y-%m-%d %H:%M:%S"`"
+          OUTPUT_FILENAME="${deployment_name}_healthscan_result_$TIMESTAMP.txt"
+          FULL_OUTPUT_PATH="$OUTPUT_DIR/$OUTPUT_FILENAME"
+          python3 cli/cluster_diag.py -o gke healthscan ${machine_type} -c gpu --run_only_on_available_nodes # Use template variable
+          python3 cli/cluster_diag.py -o gke healthscan ${machine_type} -c nccl --run_only_on_available_nodes
+          python3 cli/cluster_diag.py -o gke healthscan ${machine_type} -c neper --run_only_on_available_nodes
+          python3 cli/cluster_diag.py -o gke healthscan ${machine_type} -c status --run_only_on_available_nodes > "$FULL_OUTPUT_PATH" 2>&1
+          echo "Health scan outputs saved to $OUTPUT_DIR"
+          echo "Final output file: $OUTPUT_FILENAME"
+        volumeMounts:
+        - name: chs-result
+          mountPath: /mnt/output
+      volumes:
+      - name: chs-result
+        persistentVolumeClaim:
+          claimName: chs-output-pvc
+      restartPolicy: Never
+      tolerations:
+      - key: "nvidia.com/gpu"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "components.gke.io/gke-managed-components"
+        operator: "Exists"
+        effect: "NoSchedule"
+  backoffLimit: 0
