@@ -1,0 +1,124 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Temporary test: cross-compile gcluster.exe on Linux (there is no Windows
+# release binary), build the windows_amd64 wheel there, then install and run it
+# on a real Windows machine.
+
+name: Windows wheel install test
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [test/macos-wheel-install]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build gcluster.exe and wheel (Linux)
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 #v4.4.0
+
+    - name: Set up Go
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 #v6.5.0
+      with:
+        go-version-file: go.mod
+
+    - name: Cross-compile gcluster.exe
+      run: |
+        go version
+        CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build \
+          -ldflags="-X 'main.gitTagVersion=v1.108.0' -X 'main.installationMode=BINARY'" \
+          -o gcluster.exe gcluster.go
+        file gcluster.exe
+
+    - name: Build wheel
+      run: |
+        python3 tools/build_wheels.py --name google-cloud-cluster-toolkit \
+          --version 1.108.0 --binary windows_amd64=gcluster.exe --out dist
+        ls -l dist
+        python3 -m zipfile -l dist/*.whl | head -5
+
+    - name: Upload wheel
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-wheel
+        path: dist/*.whl
+
+  windows:
+    name: Install on ${{ matrix.runner }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-2025]
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Download wheel
+      uses: actions/download-artifact@v4
+      with:
+        name: windows-wheel
+        path: dist
+
+    - name: Machine info
+      run: |
+        cmd //c ver
+        python --version
+        ls -l dist
+
+    - name: pip install into a venv
+      run: |
+        python -m venv v
+        v/Scripts/pip install dist/*.whl
+        v/Scripts/gcluster.exe --version
+        v/Scripts/pip show google-cloud-cluster-toolkit
+        ls v/share/cluster-toolkit/examples | head
+
+    - name: gcluster create on an installed example
+      run: |
+        mkdir w && cd w
+        ../v/Scripts/gcluster.exe create ../v/share/cluster-toolkit/examples/hpc-gke.yaml \
+          --vars project_id=test-proj,authorized_cidr=10.0.0.1/32 -l IGNORE -w
+        ls cluster-01
+
+    - name: uv tool install and uvx
+      run: |
+        python -m venv tools
+        tools/Scripts/pip install -q uv pipx
+        whl=$(ls "$PWD"/dist/*.whl)
+        tools/Scripts/uv tool install "$whl"
+        bindir=$(tools/Scripts/uv tool dir --bin)
+        echo "uv bin dir: $bindir"
+        "$bindir/gcluster.exe" --version
+        tools/Scripts/uv tool uninstall google-cloud-cluster-toolkit
+        tools/Scripts/uvx --from "$whl" gcluster --version
+
+    - name: pipx install
+      run: |
+        whl=$(ls "$PWD"/dist/*.whl)
+        set +e
+        { tools/Scripts/pipx install "$whl" && bindir=$(tools/Scripts/pipx environment --value PIPX_BIN_DIR) && echo "pipx bin dir: $bindir" && "$bindir/gcluster.exe" --version; } > pipx.log 2>&1
+        rc=$?
+        cat pipx.log
+        if [ $rc -ne 0 ]; then
+          echo "::error title=pipx failed::$(tail -25 pipx.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+        fi
+        exit $rc
