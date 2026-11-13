@@ -1,0 +1,98 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Temporary test: build a wheel from the v1.108.0 release binary with
+# tools/build_wheels.py and install it on real macOS machines.
+
+name: macOS wheel install test
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [test/macos-wheel-install]
+  workflow_dispatch:
+
+jobs:
+  mac:
+    name: ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, macos-15, macos-15-intel]
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 #v4.4.0
+
+    - name: Machine info
+      run: |
+        sw_vers
+        uname -m
+        python3 --version
+
+    - name: Download v1.108.0 release binary
+      run: |
+        case "$(uname -m)" in
+          arm64) arch=arm64 ;;
+          x86_64) arch=amd64 ;;
+        esac
+        echo "PLATFORM=darwin_${arch}" >> "$GITHUB_ENV"
+        curl -sSfL -o bundle.tgz \
+          "https://github.com/GoogleCloudPlatform/cluster-toolkit/releases/download/v1.108.0/gcluster_bundle_mac_${arch}.tgz"
+        mkdir rel
+        tar xzf bundle.tgz -C rel gcluster
+        shasum -a 256 rel/gcluster
+
+    - name: Build wheel
+      run: |
+        python3 tools/build_wheels.py --name google-cloud-cluster-toolkit \
+          --version 1.108.0 --binary "${PLATFORM}=rel/gcluster" --out dist
+        ls -l dist
+
+    - name: pip install into a venv
+      run: |
+        python3 -m venv /tmp/v
+        /tmp/v/bin/pip install dist/*.whl
+        /tmp/v/bin/gcluster --version
+        /tmp/v/bin/pip show google-cloud-cluster-toolkit
+        ex=/tmp/v/share/cluster-toolkit/examples
+        ls "$ex" | head
+        test -x "$ex/machine-learning/build-service-images/build.sh"
+        echo "quarantine attrs:"; xattr -l /tmp/v/bin/gcluster || true
+        echo "signature:"; codesign -dv /tmp/v/bin/gcluster || true
+
+    - name: gcluster create on an installed example
+      run: |
+        mkdir /tmp/w && cd /tmp/w
+        /tmp/v/bin/gcluster create /tmp/v/share/cluster-toolkit/examples/hpc-gke.yaml \
+          --vars project_id=test-proj,authorized_cidr=10.0.0.1/32 -l IGNORE -w
+        ls /tmp/w/cluster-01
+
+    - name: uv tool install and uvx
+      run: |
+        python3 -m venv /tmp/tools
+        /tmp/tools/bin/pip install -q uv pipx
+        whl=$(ls "$PWD"/dist/*.whl)
+        /tmp/tools/bin/uv tool install "$whl"
+        ~/.local/bin/gcluster --version
+        /tmp/tools/bin/uv tool uninstall google-cloud-cluster-toolkit
+        /tmp/tools/bin/uvx --from "$whl" gcluster --version
+
+    - name: pipx install
+      run: |
+        whl=$(ls "$PWD"/dist/*.whl)
+        /tmp/tools/bin/pipx install "$whl"
+        ~/.local/bin/gcluster --version
