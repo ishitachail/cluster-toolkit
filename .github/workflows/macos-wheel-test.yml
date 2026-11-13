@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-14, macos-15, macos-15-intel]
+        runner: [macos-15, macos-15-intel, macos-26]
     steps:
     - name: Checkout Repository
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 #v4.4.0
@@ -94,5 +94,12 @@ jobs:
     - name: pipx install
       run: |
         whl=$(ls "$PWD"/dist/*.whl)
-        /tmp/tools/bin/pipx install "$whl"
-        ~/.local/bin/gcluster --version
+        /tmp/tools/bin/python --version
+        set +e
+        { /tmp/tools/bin/pipx install --verbose "$whl" && ~/.local/bin/gcluster --version; } > pipx.log 2>&1
+        rc=$?
+        cat pipx.log
+        if [ $rc -ne 0 ]; then
+          echo "::error title=pipx failed::$(tail -25 pipx.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+        fi
+        exit $rc
